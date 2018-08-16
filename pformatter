@@ -1,0 +1,41 @@
+#!/usr/bin/env python
+import mmap
+import os
+import struct
+
+IDX_PSWA = 0
+IDX_PSWM = 1
+IDX_GPR0 = 2
+IDX_GPR15 = 17
+IDX_MAX = 18
+NAMES = ['PSWA', 'PSWM'] + ['GPR%d' % i for i in range(16)]
+
+fd = os.open('ptracer.out', os.O_RDONLY)
+try:
+    n = os.fstat(fd).st_size
+    m = mmap.mmap(fd, n, access=mmap.ACCESS_READ)
+    try:
+        i = 0
+        values = [0] * IDX_MAX
+        while i < n:
+            header, = struct.unpack('>Q', m[i:i + 8])
+            i += 8
+            j = 0
+            d = 56
+            while j < IDX_MAX:
+                if (header & (1 << j)) != 0:
+                    values[j], = struct.unpack('>Q', m[i:i + 8])
+                    i += 8
+                if (header & (1 << (IDX_MAX + j))) != 0:
+                    delta = (header >> d) & 0xff
+                    if delta >= 128:
+                        delta -= 256
+                    values[j] += delta
+                    d -= 8
+                print('%-6s %.16X' % (NAMES[j], values[j]))
+                j += 1
+            print('')
+    finally:
+        m.close()
+finally:
+    os.close(fd)
