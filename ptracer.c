@@ -1,3 +1,4 @@
+/* vim: set noet ts=8 sw=8: */
 #include <asm/ptrace.h>
 #include <linux/elf.h>
 #include <signal.h>
