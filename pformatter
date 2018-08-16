@@ -8,7 +8,19 @@ IDX_PSWM = 1
 IDX_GPR0 = 2
 IDX_GPR15 = 17
 IDX_MAX = 18
+FLAG_INSN = 1 << 36
 NAMES = ['PSWA', 'PSWM'] + ['GPR%d' % i for i in range(16)]
+
+
+def get_ilen(opc):
+    ilc = opc >> 6
+    if ilc == 0:
+        return 2
+    elif ilc == 1 or ilc == 2:
+        return 4
+    else:
+        return 6
+
 
 fd = os.open('ptracer.out', os.O_RDONLY)
 try:
@@ -31,9 +43,16 @@ try:
                     if delta >= 128:
                         delta -= 256
                     values[j] += delta
+                    values[j] &= 0xffffffffffffffff
                     d -= 8
                 print('%-6s %.16X' % (NAMES[j], values[j]))
                 j += 1
+            if (header & FLAG_INSN) != 0:
+                ilen = get_ilen(ord(m[i]))
+                print('insn: ' + ' '.join(
+                    '%.2x' % ord(m[i + k])
+                    for k in range(0, ilen)))
+                i += ilen
             print('')
     finally:
         m.close()

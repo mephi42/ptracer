@@ -6,7 +6,8 @@ ptracer: ptracer.c
 		$(CC) -o ptracer $(CFLAGS) ptracer.c
 
 check: ptracer
-		./ptracer /bin/true
+		time -p ./ptracer /bin/true
+		time -p ./pformatter >ptracer.txt
 
 clean:
 		rm -f ptracer
