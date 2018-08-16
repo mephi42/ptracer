@@ -22,6 +22,7 @@ def get_ilen(opc):
         return 6
 
 
+insns = {}
 fd = os.open('ptracer.out', os.O_RDONLY)
 try:
     n = os.fstat(fd).st_size
@@ -47,12 +48,17 @@ try:
                     d -= 8
                 print('%-6s %.16X' % (NAMES[j], values[j]))
                 j += 1
-            if (header & FLAG_INSN) != 0:
+            pswa = values[IDX_PSWA]
+            if (header & FLAG_INSN) == 0:
+                insn = insns[pswa]
+            else:
                 ilen = get_ilen(ord(m[i]))
-                print('insn: ' + ' '.join(
-                    '%.2x' % ord(m[i + k])
-                    for k in range(0, ilen)))
+                insn = m[i:i + ilen]
                 i += ilen
+                insns[pswa] = insn
+            print('INSN   ' + ' '.join(
+                    '%.2X' % ord(insn_byte)
+                    for insn_byte in insn))
             print('')
     finally:
         m.close()

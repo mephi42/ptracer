@@ -15,6 +15,8 @@
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <uthash.h>
+#include <utlist.h>
 
 /* Output file consists of sequential records.
  * Each record starts with an 8-byte header:
@@ -34,6 +36,63 @@
 #define IDX_GPR15 17
 #define IDX_MAX 18
 #define FLAG_INSN (1ul << (IDX_MAX * 2))
+
+#define MAX_INSN_SIZE 6
+
+struct hash_entry {
+	unsigned long pswa;
+	char insn[MAX_INSN_SIZE];
+	UT_hash_handle hh;
+};
+
+struct hash_arena {
+	size_t size;
+	size_t capacity;
+	struct hash_arena *prev, *next;
+	struct hash_entry entries[];
+};
+
+struct hash_table {
+	struct hash_arena *arenas;
+	struct hash_entry *entries;
+};
+
+static void hash_table_init(struct hash_table *h)
+{
+	h->arenas = NULL;
+	h->entries = NULL;
+}
+
+static struct hash_entry *hash_alloc_entry(struct hash_table *h)
+{
+	const size_t capacity = 1 << 20;
+	struct hash_arena *arena;
+
+	if (h->arenas == NULL || h->arenas->size == h->arenas->capacity) {
+		arena = calloc(1, sizeof(struct hash_arena) +
+				sizeof(struct hash_entry) * capacity);
+		if (!arena) {
+			fprintf(stderr, "Out of memory\n");
+			return NULL;
+		}
+		arena->capacity = capacity;
+		CDL_PREPEND(h->arenas, arena);
+	}
+	return &h->arenas->entries[h->arenas->size++];
+}
+
+struct hash_entry *hash_table_get(struct hash_table *h, unsigned long pswa)
+{
+	struct hash_entry *p;
+
+	HASH_FIND(hh, h->entries, &pswa, sizeof(unsigned long), p);
+	if (p)
+		return p;
+	p = hash_alloc_entry(h);
+	p->pswa = pswa;
+	HASH_ADD(hh, h->entries, pswa, sizeof(unsigned long), p);
+	return p;
+}
 
 static unsigned long get_s390_reg(const s390_regs *regs, int i)
 {
@@ -64,6 +123,7 @@ static int write_entry(
 		FILE *out,
 		const s390_regs *new_regs,
 		const s390_regs *old_regs,
+		struct hash_table *insns,
 		const char *insn,
 		size_t ilen)
 {
@@ -71,15 +131,21 @@ static int write_entry(
 	int i, n, d;
 
 	values[0] = 0;
-	if (ilen > 0)
-		values[0] |= FLAG_INSN;
+	if (ilen > 0) {
+		struct hash_entry *entry = hash_table_get(
+				insns, new_regs->psw.addr);
+		if (!entry)
+			return -1;
+		if (memcmp(entry->insn, insn, ilen) != 0) {
+			memcpy(entry->insn, insn, ilen);
+			values[0] |= FLAG_INSN;
+		}
+	}
 	for (i = 0, n = 1, d = 56; i < IDX_MAX; i++) {
-		unsigned long new_reg, old_reg;
-		long delta_reg;
+		unsigned long new_reg = get_s390_reg(new_regs, i);
+		unsigned long old_reg = get_s390_reg(old_regs, i);
+		long delta_reg = new_reg - old_reg;
 
-		new_reg = get_s390_reg(new_regs, i);
-		old_reg = get_s390_reg(old_regs, i);
-		delta_reg = new_reg - old_reg;
 		if (delta_reg == 0)
 			continue;
 		if (d >= 40 && delta_reg >= -128 && delta_reg <= 127) {
@@ -117,8 +183,6 @@ static int open_mem(pid_t pid)
 	}
 	return mem_fd;
 }
-
-#define MAX_INSN_SIZE 6
 
 static int read_insn(pid_t pid, unsigned long pswa, int *mem_fd,
 		char *insn, size_t *ilen)
@@ -173,6 +237,7 @@ int main(int argc, char **argv)
 	int r;
 	char insn[MAX_INSN_SIZE];
 	size_t ilen;
+	struct hash_table insns;
 
 	if (argc < 2) {
 		fprintf(stderr, "Usage: %s utility [argument ...]\n", argv[0]);
@@ -217,6 +282,7 @@ int main(int argc, char **argv)
 	if (mem_fd == -1)
 		return EXIT_FAILURE;
 	memset(&regs, 0, sizeof(regs));
+	hash_table_init(&insns);
 	for (r = 0; ; r = 1 - r) {
 		iov.iov_base = &regs[r];
 		iov.iov_len = sizeof(regs[r]);
@@ -224,11 +290,11 @@ int main(int argc, char **argv)
 			perror("ptrace(PTRACE_GETREGSET) failed");
 			return EXIT_FAILURE;
 		}
-		if (read_insn(pid, get_s390_reg(&regs[r], IDX_PSWA), &mem_fd,
+		if (read_insn(pid, regs[r].psw.addr, &mem_fd,
 					insn, &ilen) == -1)
 			goto _close_out;
 		if (write_entry(out, &regs[r], &regs[1 - r],
-					insn, ilen) == -1)
+					&insns, insn, ilen) == -1)
 			goto _close_out;
 		if (ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL) == -1) {
 			perror("ptrace(PTRACE_SINGLESTEP) failed");
