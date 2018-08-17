@@ -1,7 +1,9 @@
 #!/usr/bin/env python
+import capstone
 import mmap
 import os
 import struct
+import sys
 
 IDX_PSWA = 0
 IDX_PSWM = 1
@@ -23,7 +25,12 @@ def get_ilen(opc):
 
 
 insns = {}
-fd = os.open('ptracer.out', os.O_RDONLY)
+if len(sys.argv) < 2:
+    path = 'ptracer.out'
+else:
+    path = sys.argv[1]
+md = capstone.Cs(capstone.CS_ARCH_SYSZ, capstone.CS_MODE_BIG_ENDIAN)
+fd = os.open(path, os.O_RDONLY)
 try:
     n = os.fstat(fd).st_size
     m = mmap.mmap(fd, n, access=mmap.ACCESS_READ)
@@ -50,15 +57,25 @@ try:
                 j += 1
             pswa = values[IDX_PSWA]
             if (header & FLAG_INSN) == 0:
-                insn = insns[pswa]
+                ioff, ilen, iobj = insns[pswa]
             else:
-                ilen = get_ilen(ord(m[i]))
-                insn = m[i:i + ilen]
+                ioff = i
+                ilen = get_ilen(ord(m[ioff]))
+                try:
+                    iobj = next(md.disasm(m[ioff:ioff + ilen], pswa))
+                except StopIteration:
+                    iobj = None
                 i += ilen
-                insns[pswa] = insn
-            print('INSN   ' + ' '.join(
+                insns[pswa] = ioff, ilen, iobj
+            istr = 'INSN   ' + ' '.join(
                     '%.2X' % ord(insn_byte)
-                    for insn_byte in insn))
+                    for insn_byte in m[ioff:ioff + ilen])
+            istr += (32 - len(istr)) * ' '
+            if iobj is None:
+                istr += '<unknown>'
+            else:
+                istr += '%s %s' % (iobj.mnemonic, iobj.op_str)
+            print(istr)
             print('')
     finally:
         m.close()
